@@ -1,0 +1,32 @@
+name: Update README every 1 hour
+
+on:
+  workflow_dispatch:
+    schedule:
+    - cron: '0 10 * * *'
+
+permissions:
+  contents: write   # <-- allows pushing with GITHUB_TOKEN
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update README with current timestamp
+        run: |
+          TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S %Z')
+          echo "Last Deployed: $TIMESTAMP" > README.md
+
+      - name: Commit and push if changed
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add README.md
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update README timestamp"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

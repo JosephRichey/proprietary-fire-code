@@ -15,11 +15,11 @@ library(lubridate)
 CON <- tryCatch({
   DBI::dbConnect(
     drv = RMariaDB::MariaDB(),
-    user = Sys.getenv("DEMO_DB_USER"),
-    password = Sys.getenv("DEMO_DB_USER_PASSWORD"),
+    user = Sys.getenv("DB_USER"),
+    password = Sys.getenv("DB_USER_PASSWORD"),
     host = Sys.getenv("DB_HOST"),
     port = 3306,
-    dbname = Sys.getenv("DEMO_DB_NAME"),
+    dbname = Sys.getenv("DB_NAME"),
     ssl.ca = 'global-bundle.pem'
   )
 }, error = function(e) {
