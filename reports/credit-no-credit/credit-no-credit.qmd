@@ -188,7 +188,7 @@ if (any(Result$credit == 0)) {
   
   email |> 
     smtp_send(
-    to = 'jwrichey.1@gmail.com',
+    to = c('jwrichey.1@gmail.com', 'corinne.fire@gmail.com', 'sorenson1967@gmail.com', 'Lemondsn85@gmail.com'),
     from = c("noreply@firepulse.com" = 'jwrichey.1@gmail.com'),
     subject = 'Credit Notification',
     credentials = creds_envvar(
