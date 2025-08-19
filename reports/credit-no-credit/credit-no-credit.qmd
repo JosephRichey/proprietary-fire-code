@@ -103,7 +103,7 @@ Attendance <- DBI::dbGetQuery(CON, "SELECT * FROM attendance") |>
                  check_out = ConvertToLocalPosix(check_out,
                                                 input = 'datetime',
                                                 output = 'datetime'),
-                 attendance_length = (check_out - check_in) |> as.numeric()
+                 attendance_length = (check_out - check_in) |> as.numeric() |> round(0)
                  )
 
 Firefighter <- DBI::dbGetQuery(CON, "SELECT id, full_name FROM firefighter")
@@ -114,8 +114,8 @@ Firefighter <- DBI::dbGetQuery(CON, "SELECT id, full_name FROM firefighter")
 ```{r Determine Credit}
 Credit_Threshold <- Attendance |> 
   group_by(training_id) |> 
-  summarise(median_attendance = median(attendance_length, na.rm = TRUE)) |> 
-  mutate(credit_threshold = median_attendance * 0.7)
+  summarise(median_attendance = median(attendance_length, na.rm = TRUE) |> round(0)) |> 
+  mutate(credit_threshold = round(median_attendance * 0.7, 0))
 
 
 
