@@ -1,0 +1,215 @@
+---
+title: "credit-no-credit"
+format: html
+execute:
+  echo: false
+  message: false
+  warning: false
+---
+
+
+```{r Load libraries and connect to database}
+library(dplyr)
+library(blastula)
+library(DBI)
+library(RMariaDB)
+library(logger)
+library(lubridate)
+
+CON <- tryCatch({
+  DBI::dbConnect(
+    drv = RMariaDB::MariaDB(),
+    user = Sys.getenv("DEMO_DB_USER"),
+    password = Sys.getenv("DEMO_DB_USER_PASSWORD"),
+    host = Sys.getenv("DB_HOST"),
+    port = 3306,
+    dbname = Sys.getenv("DEMO_DB_NAME"),
+    ssl.ca = 'global-bundle.pem'
+  )
+}, error = function(e) {
+  log_error(glue::glue("Database connection failed: {e$message}"),
+            namespace = "app_data")
+  NULL  # fallback to NULL if connection fails
+})
+
+if(is.null(CON)) {
+  log_error("Database connection is NULL. Exiting.",
+            namespace = "app_data")
+  stop("Database connection failed. Exiting.")
+} else {
+  log_success("Database connection established successfully.", namespace = "app_data")
+}
+
+```
+
+```{r Function Definition}
+
+tz_local <- dbGetQuery(
+  CON,
+  "SELECT * FROM setting
+  WHERE domain = 'global' AND
+    setting_key = 'ltz'") |>
+  pull(setting_value)
+
+ConvertToLocalPosix <- function(dt,
+                              input = c("datetime", "date"),
+                              output = c("datetime", "date")) {
+  input <- match.arg(input)
+  output <- match.arg(output)
+
+  # Restrict incompatible input-output combinations
+  invalid_combo <- (input == "date"   && output == "datetime")
+
+  if (invalid_combo) {
+    stop(glue::glue("Invalid conversion: cannot format input type '{input}' as output type '{output}'"))
+  }
+
+  # Dates can only be converted to dates, so return as is
+  if (input == "date" && output == "date") {
+    return(as.Date(dt))
+  }
+
+  # Normalize input into UTC
+  dt_utc <- as.POSIXct(dt, tz = "UTC")
+
+  # Convert to local timezone
+  dt_local <- lubridate::with_tz(dt_utc, tzone = tz_local)
+
+  if(input == 'datetime' && output == 'date') {
+    return(as.Date(dt_local, tz = tz_local))
+  }
+
+  # Default is to return as datetime.
+  return(dt_local)
+}
+
+
+
+```
+
+
+```{r Queries}
+Training <- DBI::dbGetQuery(CON, "SELECT * FROM training") |>
+          mutate(start_time = ConvertToLocalPosix(start_time,
+                                                  input = 'datetime',
+                                                  output = 'datetime'),
+                 end_time = ConvertToLocalPosix(end_time,
+                                                  input = 'datetime',
+                                                  output = 'datetime'),
+                 training_date = ConvertToLocalPosix(start_time,
+                                                  input = 'datetime',
+                                                  output = 'date'))
+
+Attendance <- DBI::dbGetQuery(CON, "SELECT * FROM attendance") |>
+          mutate(check_in = ConvertToLocalPosix(check_in,
+                                                  input = 'datetime',
+                                                  output = 'datetime'),
+                 check_out = ConvertToLocalPosix(check_out,
+                                                input = 'datetime',
+                                                output = 'datetime'),
+                 attendance_length = (check_out - check_in) |> as.numeric()
+                 )
+
+Firefighter <- DBI::dbGetQuery(CON, "SELECT id, full_name FROM firefighter")
+
+```
+
+
+```{r Determine Credit}
+Credit_Threshold <- Attendance |> 
+  group_by(training_id) |> 
+  summarise(median_attendance = median(attendance_length, na.rm = TRUE)) |> 
+  mutate(credit_threshold = median_attendance * 0.7)
+
+
+
+Result <- Attendance |> 
+  left_join(
+    Credit_Threshold, 
+    by = "training_id"
+  ) |>
+  filter(is.na(credit) & excused != 1) |> 
+  mutate(
+    credit = if_else(attendance_length >= credit_threshold, 1, 0))
+
+# Check that none of the thresholds are zero
+if(any(Credit_Threshold$credit_threshold == 0)) {
+  log_error("Credit threshold is zero for one or more trainings. Check attendance data.", namespace = "app_data")
+  stop("Credit threshold is zero for one or more trainings. Check attendance data.")
+} else {
+  log_success("All credit thresholds are valid and non-zero.", namespace = "app_data")
+}
+
+
+```
+
+```{r Write to DB}
+
+for (i in Result$id) {
+  
+  query <- glue::glue("UPDATE attendance
+                      SET credit = {Result$credit[Result$id == i]}
+                      WHERE id = {i};")
+  
+  tryCatch({
+    DBI::dbExecute(CON, query)
+  }, error = function(e) {
+    log_error(glue::glue("Failed to insert credit for id: {i} {e$message}"), namespace = "app_data")
+  })
+}
+
+
+
+```
+
+```{r Send email if someone didn't get credit}
+if (any(Result$credit == 0)) {
+  
+  # Create the email body
+  email_body <- Result |> 
+    filter(credit == 0) |> 
+    left_join(Firefighter, by = c("firefighter_id" = "id")) |> 
+    left_join(Training |> select(id, training_date), by = c("training_id" = 'id')) |> 
+    mutate(
+      message = glue::glue("{full_name} did not receive credit for training on {training_date} due to insufficient attendance. The average attendance was {median_attendance} minutes and {credit_threshold} minutes were needed for credit. {full_name} attended for {attendance_length} minute(s)).")
+    ) |> 
+    pull(message) |> 
+    paste(collapse = "\n\n\n")
+  
+  # Send the email
+  email <- compose_email(
+    header = "Firefighter Credit Notification",
+    body = md(email_body),
+    footer = md(
+      glue::glue(
+        "Email sent on { add_readable_time(Sys.time() |> with_tz(tz_local))}.
+        This message was sent by FirePulse from an unmonitored email address.
+        Please do not reply to this email.
+        "
+      )
+    )
+  )
+  
+  email |> 
+    smtp_send(
+    to = 'jwrichey.1@gmail.com',
+    from = c("noreply@firepulse.com" = 'jwrichey.1@gmail.com'),
+    subject = 'Credit Notification',
+    credentials = creds_envvar(
+      user = "jwrichey.1@gmail.com",
+      provider = 'gmail',
+      host = "smtp.gmail.com",
+      port = 465,
+      use_ssl = TRUE
+    )
+  )
+  
+  log_success("Email sent successfully for firefighters who did not receive credit.", namespace = "app_data")
+} else {
+  log_info("All firefighters received credit. No email sent.", namespace = "app_data")
+}
+
+
+
+
+```
