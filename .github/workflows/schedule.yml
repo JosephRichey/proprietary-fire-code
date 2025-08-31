@@ -1,9 +1,8 @@
 name: Update README every 1 hour
 
 on:
-  workflow_dispatch:
-    schedule:
-    - cron: '0 10 * * *'
+  schedule:
+  - cron: '0 10 * * *'
 
 permissions:
   contents: write   # <-- allows pushing with GITHUB_TOKEN
