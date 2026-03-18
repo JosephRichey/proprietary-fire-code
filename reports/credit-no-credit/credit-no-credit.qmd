@@ -115,7 +115,7 @@ Firefighter <- DBI::dbGetQuery(CON, "SELECT id, full_name FROM firefighter")
 Credit_Threshold <- Attendance |> 
   group_by(training_id) |> 
   summarise(median_attendance = median(attendance_length, na.rm = TRUE) |> round(0)) |> 
-  mutate(credit_threshold = round(median_attendance * 0.7, 0))
+  mutate(credit_threshold = round(median_attendance * 0.6, 0))
 
 
 
