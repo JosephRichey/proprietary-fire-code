@@ -103,7 +103,7 @@ Attendance <- DBI::dbGetQuery(CON, "SELECT * FROM attendance") |>
                  check_out = ConvertToLocalPosix(check_out,
                                                 input = 'datetime',
                                                 output = 'datetime'),
-                 attendance_length = (check_out - check_in) |> as.numeric() |> round(0)
+                 attendance_length = as.numeric(difftime(check_out, check_in, units = "mins")) |> round(0)
                  )
 
 Firefighter <- DBI::dbGetQuery(CON, "SELECT id, full_name FROM firefighter")
