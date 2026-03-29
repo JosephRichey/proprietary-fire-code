@@ -186,10 +186,14 @@ if (any(Result$credit == 0)) {
       )
     )
   )
+
+  email_list <- Sys.getenv("EMAIL_LIST") |> 
+  parse(text = _) |> 
+  eval()
   
   email |> 
     smtp_send(
-    to = Sys.getenv("EMAIL_LIST"),
+    to = email_list,
     from = c("noreply@myfirepulse.com" = 'jwrichey.1@gmail.com'),
     subject = 'Credit Notification',
     credentials = creds_envvar(
