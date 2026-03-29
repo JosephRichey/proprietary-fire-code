@@ -115,7 +115,7 @@ Firefighter <- DBI::dbGetQuery(CON, "SELECT id, full_name FROM firefighter")
 Credit_Threshold <- Attendance |> 
   group_by(training_id) |> 
   summarise(median_attendance = median(attendance_length, na.rm = TRUE) |> round(0)) |> 
-  mutate(credit_threshold = round(median_attendance * 0.7, 0))
+  mutate(credit_threshold = round(median_attendance * 0.6, 0))
 
 
 
@@ -180,7 +180,8 @@ if (any(Result$credit == 0)) {
       glue::glue(
         "Email sent on { add_readable_time(Sys.time() |> with_tz(tz_local))}.
         This message was sent by FirePulse from an unmonitored email address.
-        Please do not reply to this email.
+        Please do not reply to this email. To edit credit status, please visit
+        your [data portal]({Sys.getenv('EDIT_URL_LINK')}).
         "
       )
     )
@@ -188,8 +189,9 @@ if (any(Result$credit == 0)) {
   
   email |> 
     smtp_send(
-    to = c('jwrichey.1@gmail.com', 'corinne.fire@gmail.com', 'sorenson1967@gmail.com', 'Lemondsn85@gmail.com'),
-    from = c("noreply@firepulse.com" = 'jwrichey.1@gmail.com'),
+    # to = c('jwrichey.1@gmail.com', 'corinne.fire@gmail.com', 'sorenson1967@gmail.com', 'Lemondsn85@gmail.com'),
+    to = c('jwrichey.1@gmail.com'),
+    from = c("noreply@myfirepulse.com" = 'jwrichey.1@gmail.com'),
     subject = 'Credit Notification',
     credentials = creds_envvar(
       user = "jwrichey.1@gmail.com",
