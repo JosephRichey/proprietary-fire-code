@@ -1,0 +1,319 @@
+---
+title: "Mantua Fire Department Payroll"
+format:
+  html:
+    toc: false
+    theme: [flatly]
+    self-contained: true
+    echo: false
+    message: false
+    warning: false
+params:
+  start_date: "2026-01-01"
+  end_date:   "2026-03-31"
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(DBI)
+library(RMariaDB)
+library(logger)
+library(lubridate)
+library(scales)
+library(gt)
+library(ggplot2)
+library(ggrepel)
+library(firecore)
+
+CON <- tryCatch({
+  DBI::dbConnect(
+    drv      = RMariaDB::MariaDB(),
+    user     = Sys.getenv("DB_USER"),
+    password = Sys.getenv("DB_USER_PASSWORD"),
+    host     = Sys.getenv("DB_HOST"),
+    port     = 3306,
+    dbname   = Sys.getenv("DB_NAME"),
+    ssl.ca   = 'global-bundle.pem'
+  )
+}, error = function(e) {
+  log_error(glue::glue("Database connection failed: {e$message}"), namespace = "app_data")
+  NULL
+})
+
+if (is.null(CON)) {
+  log_error("Database connection is NULL. Exiting.", namespace = "app_data")
+  stop("Database connection failed. Exiting.")
+} else {
+  log_success("Database connection established successfully.", namespace = "app_data")
+}
+
+start_date <- params$start_date
+end_date   <- params$end_date
+start_dt   <- as.Date(start_date)
+end_dt     <- as.Date(end_date)
+```
+
+```{r load-data}
+source("mantua_payroll_data.R")
+dbDisconnect(CON)
+```
+
+[*Report window: `r format(start_dt, "%B %d, %Y")` – `r format(end_dt, "%B %d, %Y")`*]{.display-7}
+
+---
+
+## 1 · Pay Summary by Firefighter
+
+::: {.column-page}
+```{r tbl-ff-summary}
+ff_summary <- detail |>
+  group_by(firefighter_id, full_name, firefighter_role, hourly_rate) |>
+  summarise(
+    incidents    = n_distinct(incident_id),
+    responses    = n_distinct(response_id),
+    actual_hours = sum(pmax(actual_hours, 0), na.rm = TRUE),
+    paid_hours   = sum(paid_hours, na.rm = TRUE),
+    paid_gross   = sum(paid_gross, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(paid_gross))
+
+ff_summary |>
+  select(-firefighter_id, -firefighter_role) |>
+  gt() |>
+  tab_header(
+    title    = "Firefighter Pay — Summary",
+    subtitle = glue::glue("{params$start_date}  →  {params$end_date}")
+  ) |>
+  cols_label(
+    full_name    = "Name",
+    hourly_rate  = "Rate ($/hr)",
+    incidents    = "Incidents",
+    responses    = "Responses",
+    actual_hours = "Actual Hrs",
+    paid_hours   = "Paid Hrs",
+    paid_gross   = "Gross Pay"
+  ) |>
+  fmt_number(columns = c(actual_hours, paid_hours), decimals = 2) |>
+  fmt_currency(columns = c(hourly_rate, paid_gross)) |>
+  grand_summary_rows(
+    columns = c(actual_hours, paid_hours, paid_gross),
+    fns     = list(TOTAL = ~sum(., na.rm = TRUE)),
+    fmt     = list(
+      ~ fmt_number(., columns = c(actual_hours, paid_hours), decimals = 2),
+      ~ fmt_currency(., columns = paid_gross)
+    )
+  ) |>
+  tab_style(
+    style     = cell_fill(color = "#f0f4f8"),
+    locations = cells_grand_summary()
+  ) |>
+  opt_interactive(use_search = TRUE, use_sorting = TRUE, use_pagination = TRUE, page_size_default = 20)
+```
+:::
+---
+
+## 2 · Pay by Dispatch Type
+
+::: {.column-page}
+```{r tbl-dispatch}
+detail |>
+  group_by(dispatch_type, dispatch_code) |>
+  summarise(
+    incidents    = n_distinct(incident_id),
+    responses    = n_distinct(response_id),
+    actual_hours = sum(pmax(actual_hours, 0), na.rm = TRUE),
+    paid_hours   = sum(paid_hours, na.rm = TRUE),
+    paid_gross   = sum(paid_gross, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(paid_gross)) |>
+  gt() |>
+  tab_header(title = "Pay by Dispatch Type") |>
+  cols_label(
+    dispatch_type = "Dispatch Type",
+    dispatch_code = "Dispatch Code",
+    incidents     = "Incidents",
+    responses     = "Responses",
+    actual_hours  = "Actual Hrs",
+    paid_hours    = "Paid Hrs",
+    paid_gross    = "Gross Pay"
+  ) |>
+  fmt_number(columns = c(actual_hours, paid_hours), decimals = 2) |>
+  fmt_currency(columns = paid_gross) |>
+  opt_interactive(use_search = TRUE, use_sorting = TRUE, use_pagination = TRUE, page_size_default = 20)
+```
+:::
+---
+
+## 3 · Audit: Minimum Hour Adjustments
+
+Responses where the minimum hour rule added time above actual hours worked.
+
+::: {.column-page}
+```{r tbl-min-hour}
+min_adj <- detail |>
+  filter(paid_hours > actual_hours) |>
+  select(
+    cad_identifier, dispatch_code,
+    response_start, response_end,
+    full_name, actual_hours, paid_hours,
+    hourly_rate, actual_gross, paid_gross
+  ) |>
+  mutate(
+    response_start = format(response_start, "%Y-%m-%d %H:%M"),
+    response_end   = format(response_end,   "%Y-%m-%d %H:%M")
+  )
+
+if (nrow(min_adj) == 0) {
+  cat("> ✅ No minimum hour adjustments in this window.")
+} else {
+  min_adj |>
+    gt() |>
+    tab_header(title = "Minimum Hour Adjustments") |>
+    cols_label(
+      cad_identifier = "CAD ID",
+      dispatch_code  = "Dispatch Code",
+      response_start = "Start",
+      response_end   = "End",
+      full_name      = "Firefighter",
+      actual_hours   = "Actual Hrs",
+      paid_hours     = "Paid Hrs",
+      hourly_rate    = "Rate",
+      actual_gross   = "Actual Pay",
+      paid_gross     = "Paid Pay"
+    ) |>
+    fmt_number(columns = c(actual_hours, paid_hours), decimals = 2) |>
+    fmt_currency(columns = c(hourly_rate, actual_gross, paid_gross)) |>
+    opt_interactive(use_search = TRUE, use_sorting = TRUE, use_pagination = TRUE, page_size_default = 25)
+}
+```
+:::
+---
+
+## 4 · Audit: Manual Time Adjustments
+
+Responses where a manual time adjustment was applied.
+
+::: {.column-page}
+```{r tbl-time-adj}
+time_adj <- detail |>
+  filter(time_adjustment != 0) |>
+  select(
+    cad_identifier, dispatch_code,
+    response_start, response_end,
+    full_name, time_adjustment,
+    actual_hours, paid_hours, hourly_rate, paid_gross
+  ) |>
+  mutate(
+    response_start = format(response_start, "%Y-%m-%d %H:%M"),
+    response_end   = format(response_end,   "%Y-%m-%d %H:%M")
+  )
+
+if (nrow(time_adj) == 0) {
+  cat("> ✅ No manual time adjustments in this window.")
+} else {
+  time_adj |>
+    gt() |>
+    tab_header(title = "Line-Item Audit — Time Adjusted Responses") |>
+    cols_label(
+      cad_identifier  = "CAD ID",
+      dispatch_code   = "Dispatch Code",
+      response_start  = "Start",
+      response_end    = "End",
+      full_name       = "Firefighter",
+      time_adjustment = "Adj (Hrs)",
+      actual_hours    = "Actual Hrs",
+      paid_hours      = "Paid Hrs",
+      hourly_rate     = "Rate",
+      paid_gross      = "Gross Pay"
+    ) |>
+    fmt_number(columns = c(time_adjustment, actual_hours, paid_hours), decimals = 2) |>
+    fmt_currency(columns = c(hourly_rate, paid_gross)) |>
+    opt_interactive(use_search = TRUE, use_sorting = TRUE, use_pagination = TRUE, page_size_default = 25)
+}
+```
+:::
+---
+
+## 5 · Audit: Missing Pay Rates
+
+Firefighters who responded in this window but have no entry in `firefighter_pay_rate`. They show as `$0.00` throughout — confirm this is intentional.
+
+::: {.column-page}
+```{r tbl-no-rate}
+no_rate <- detail |>
+  filter(hourly_rate == 0) |>
+  distinct(firefighter_id, full_name, firefighter_role)
+
+if (nrow(no_rate) == 0) {
+  cat("> ✅ All responding firefighters have a pay rate on file.")
+} else {
+  no_rate |>
+    gt() |>
+    tab_header(title = "⚠️ Firefighters with No Pay Rate") |>
+    tab_style(style = cell_fill(color = "#fff3cd"), locations = cells_body())
+}
+```
+:::
+---
+
+## 6 · Audit: Zero or Negative Hour Responses
+
+Responses where computed hours are `<= 0`, typically caused by a missing or incorrect `response_end`. These contribute `$0` to pay and should be corrected in the system.
+
+::: {.column-page}
+```{r tbl-bad-hours}
+bad_hours <- detail |>
+  filter(actual_hours <= 0 | is.na(actual_hours)) |>
+  select(
+    incident_id, cad_identifier, response_id,
+    response_start, response_end,
+    full_name, time_adjustment, actual_hours
+  )
+
+if (nrow(bad_hours) == 0) {
+  cat("> ✅ No zero or negative hour records found.")
+} else {
+  bad_hours |>
+    gt() |>
+    tab_header(title = "⚠️ Zero / Negative Hour Responses") |>
+    tab_style(style = cell_fill(color = "#f8d7da"), locations = cells_body())
+}
+```
+:::
+---
+
+## 7 · Audit: Unusually Long Responses
+
+Responses exceeding **12 hours**. May be legitimate major incidents or data entry errors — worth a quick look either way.
+
+::: {.column-page}
+```{r tbl-long}
+long_resp <- detail |>
+  mutate(base_hours = as.numeric(difftime(response_end, response_start, units = "hours"))) |>
+  filter(base_hours > 12) |>
+  select(
+    incident_id, cad_identifier,
+    response_start, response_end,
+    full_name, base_hours, time_adjustment, paid_gross
+  ) |>
+  arrange(desc(base_hours))
+
+if (nrow(long_resp) == 0) {
+  cat("> ✅ No responses longer than 12 hours found.")
+} else {
+  long_resp |>
+    gt() |>
+    tab_header(title = "⚠️ Responses Exceeding 12 Hours") |>
+    fmt_number(columns = c(base_hours, time_adjustment), decimals = 2) |>
+    fmt_currency(columns = paid_gross) |>
+    tab_style(style = cell_fill(color = "#fff3cd"), locations = cells_body())
+}
+```
+:::
+---
+
+*Generated:* `r format(Sys.time(), "%Y-%m-%d %H:%M %Z")`
